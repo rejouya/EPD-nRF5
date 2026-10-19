@@ -16,7 +16,7 @@
         <TargetCommonOption>
           <Device>nRF52811_xxAA</Device>
           <Vendor>Nordic Semiconductor</Vendor>
-          <PackID>NordicSemiconductor.nRF_DeviceFamilyPack.8.40.3</PackID>
+          <PackID>NordicSemiconductor.nRF_DeviceFamilyPack.8.44.1</PackID>
           <PackURL>http://developer.nordicsemi.com/nRF5_SDK/pieces/nRF_DeviceFamilyPack/</PackURL>
           <Cpu>IRAM(0x20000000,0x00006000) IRAM2(0x00800000,0x00006000) IROM(0x00000000,0x00030000) CPUTYPE("Cortex-M4") DSP CLOCK(12000000) ELITTLE</Cpu>
           <FlashUtilSpec></FlashUtilSpec>
@@ -773,7 +773,7 @@
         <TargetCommonOption>
           <Device>nRF52811_xxAA</Device>
           <Vendor>Nordic Semiconductor</Vendor>
-          <PackID>NordicSemiconductor.nRF_DeviceFamilyPack.8.40.3</PackID>
+          <PackID>NordicSemiconductor.nRF_DeviceFamilyPack.8.44.1</PackID>
           <PackURL>http://developer.nordicsemi.com/nRF5_SDK/pieces/nRF_DeviceFamilyPack/</PackURL>
           <Cpu>IRAM(0x20000000,0x00006000) IRAM2(0x00800000,0x00006000) IROM(0x00000000,0x00030000) CPUTYPE("Cortex-M4") DSP CLOCK(12000000) ELITTLE</Cpu>
           <FlashUtilSpec></FlashUtilSpec>
@@ -1527,7 +1527,7 @@
       <filter>
         <targetInfos/>
       </filter>
-      <package name="nRF_DeviceFamilyPack" vendor="NordicSemiconductor" version="8.40.3">
+      <package name="nRF_DeviceFamilyPack" vendor="NordicSemiconductor" version="8.44.1">
         <targetInfos>
           <targetInfo name="flash_softdevice" versionMatchMode="fixed"/>
           <targetInfo name="nRF52811_xxAA" versionMatchMode="fixed"/>

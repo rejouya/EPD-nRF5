@@ -415,6 +415,101 @@ static void DrawClock(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui
     }
 }
 
+// Layout for the 2.13" 128x250 panel used in landscape (GFX rotated 270), logical space 250x128
+static void DrawWeekHeaderL(Adafruit_GFX* gfx) {
+    GFX_fillRect(gfx, 0, 0, 176, 16, GFX_RED);
+    GFX_fillRect(gfx, 24, 0, 128, 16, GFX_BLACK);
+    GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
+    for (int i = 0; i < 7; i++) {
+        uint16_t bg = (i == 0 || i == 6) ? GFX_RED : GFX_BLACK;
+        GFX_setTextColor(gfx, GFX_WHITE, bg);
+        GFX_setCursor(gfx, 4 + i * 24, 12);
+        GFX_printf(gfx, "%s", Lunar_DayString[i]);
+    }
+    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
+}
+
+static void DrawMonthDaysL(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar) {
+    uint8_t firstDayWeek = get_first_day_week(tm->tm_year + YEAR0, tm->tm_mon + 1);
+    uint8_t monthMaxDays = thisMonthMaxDays(tm->tm_year + YEAR0, tm->tm_mon + 1);
+
+    for (uint8_t i = 0; i < monthMaxDays; i++) {
+        uint8_t day = i + 1;
+        int16_t week = (firstDayWeek + i) % 7;
+        bool weekend = (week == 0) || (week == 6);
+
+        int16_t x = week * 24;
+        int16_t y = 21 + (firstDayWeek + i) / 7 * 18;
+
+        if (day == tm->tm_mday) {
+            GFX_fillCircle(gfx, x + 10, y + 4, 12, GFX_RED);
+            GFX_setTextColor(gfx, GFX_WHITE, GFX_RED);
+        } else {
+            GFX_setTextColor(gfx, weekend ? GFX_RED : GFX_BLACK, GFX_WHITE);
+        }
+
+        GFX_setFont(gfx, u8g2_font_helvB14_tn);
+        GFX_setCursor(gfx, x + (day < 10 ? 6 : 2), y + 10);
+        GFX_printf(gfx, "%d", day);
+        GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
+    }
+}
+
+static void DrawDateHeaderL(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, struct Lunar_Date* Lunar,
+                            gui_data_t* data) {
+    GFX_setCursor(gfx, x, y);
+    GFX_printf_styled(gfx, GFX_RED, GFX_WHITE, u8g2_font_helvB14_tn, "%d-%d", tm->tm_year + YEAR0, tm->tm_mon + 1);
+
+    if (tm->tm_mday > 9)
+        Draw7Number(gfx, tm->tm_mday, x, y - 80, 3, GFX_BLACK, GFX_WHITE, 2);
+    else
+        Draw7Number(gfx, tm->tm_mday, x + 16, y - 80, 3, GFX_BLACK, GFX_WHITE, 1);
+
+    GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
+    DrawBattery(gfx, 244, 0, 20, data->voltage);
+    GFX_drawFastVLine(gfx, x - 4, 24, 100, GFX_RED);
+
+    GFX_setCursor(gfx, x, y + 12);
+    GFX_printf(gfx, "%s%s%s", Lunar_MonthLeapString[Lunar->IsLeap], Lunar_MonthString[Lunar->Month],
+               Lunar_DateString[Lunar->Date]);
+    GFX_setCursor(gfx, x, y + 26);
+    GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);
+    GFX_printf(gfx, "%s%s%s", Lunar_StemStrig[LUNAR_GetStem(Lunar)],
+               Lunar_BranchStrig[LUNAR_GetBranch(Lunar)], Lunar_ZodiacString[LUNAR_GetZodiac(Lunar)]);
+    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
+    GFX_printf(gfx, "年");
+}
+
+static void DrawCalendarL(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui_data_t* data) {
+    DrawWeekHeaderL(gfx);
+    DrawDateHeaderL(gfx, 182, 92, tm, Lunar, data);
+    DrawMonthDaysL(gfx, tm, Lunar);
+}
+
+static void DrawClockL(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui_data_t* data) {
+    GFX_setCursor(gfx, 0, 14);
+    GFX_printf_styled(gfx, GFX_RED, GFX_WHITE, u8g2_font_helvB14_tn, "%d-%02d-%02d", tm->tm_year + YEAR0,
+                      tm->tm_mon + 1, tm->tm_mday);
+
+    GFX_setCursor(gfx, 100, 14);
+    GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
+    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
+    GFX_printf(gfx, "星期%s %s%s%s", Lunar_DayString[tm->tm_wday], Lunar_MonthLeapString[Lunar->IsLeap],
+               Lunar_MonthString[Lunar->Month], Lunar_DateString[Lunar->Date]);
+
+    DrawTime(gfx, tm, 32, 20, 4, 2);
+
+    GFX_setCursor(gfx, 0, 120);
+    GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
+    GFX_printf(gfx, "%s%s%s年", Lunar_StemStrig[LUNAR_GetStem(Lunar)], Lunar_BranchStrig[LUNAR_GetBranch(Lunar)],
+               Lunar_ZodiacString[LUNAR_GetZodiac(Lunar)]);
+
+    GFX_setCursor(gfx, 72, 120);
+    GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
+    GFX_printf(gfx, "%d℃", data->temperature);
+    DrawBattery(gfx, 238, 105, 20, data->voltage);
+}
+
 void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     if (data->week_start > 6) data->week_start = 0;
 
@@ -424,14 +519,25 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     transformTime(data->timestamp, &tm);
 
     Adafruit_GFX gfx;
-    int16_t ph = (__HEAP_SIZE - 512) / (data->width / 8);
 
-    if (data->color == 2)
-        GFX_begin_3c(&gfx, data->width, data->height, ph);
-    else if (data->color == 3)
-        GFX_begin_4c(&gfx, data->width, data->height, ph);
+    bool landscape = (data->width == 128 && data->height == 250);
+    gui_data_t d = *data;
+    uint16_t pw = data->width, phh = data->height;  // physical panel size
+    if (landscape) {
+        d.width = data->height;  // logical landscape 250x128
+        d.height = data->width;
+    }
+
+    int16_t ph = (__HEAP_SIZE - 512) / ((pw + 7) / 8);
+
+    if (d.color == 2)
+        GFX_begin_3c(&gfx, pw, phh, ph);
+    else if (d.color == 3)
+        GFX_begin_4c(&gfx, pw, phh, ph);
     else
-        GFX_begin(&gfx, data->width, data->height, ph);
+        GFX_begin(&gfx, pw, phh, ph);
+
+    if (landscape) GFX_setRotation(&gfx, GFX_ROTATE_270);
 
     GFX_firstPage(&gfx);
     do {
@@ -439,19 +545,25 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
 
         LUNAR_SolarToLunar(&Lunar, tm.tm_year + YEAR0, tm.tm_mon + 1, tm.tm_mday);
 
-        switch (data->mode) {
+        switch (d.mode) {
             case MODE_CALENDAR:
-                DrawCalendar(&gfx, &tm, &Lunar, data);
+                if (landscape)
+                    DrawCalendarL(&gfx, &tm, &Lunar, &d);
+                else
+                    DrawCalendar(&gfx, &tm, &Lunar, &d);
                 break;
             case MODE_CLOCK:
-                DrawClock(&gfx, &tm, &Lunar, data);
+                if (landscape)
+                    DrawClockL(&gfx, &tm, &Lunar, &d);
+                else
+                    DrawClock(&gfx, &tm, &Lunar, &d);
                 break;
             default:
                 break;
         }
-        if ((data->mode == MODE_CALENDAR || data->mode == MODE_CLOCK) &&
+        if ((d.mode == MODE_CALENDAR || d.mode == MODE_CLOCK) &&
             (tm.tm_year + YEAR0 == 2025 && tm.tm_mon + 1 == 1)) {
-            DrawTimeSyncTip(&gfx, data);
+            DrawTimeSyncTip(&gfx, &d);
         }
     } while (GFX_nextPage(&gfx, callback, callback_data));
 

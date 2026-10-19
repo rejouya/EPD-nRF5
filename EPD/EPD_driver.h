@@ -148,6 +148,7 @@ typedef enum {
     UC8159_583_LOW_BW = 0x0f,
     UC8179_583_BWR = 0x10,
     UC8179_583_BW = 0x11,
+    SSD1619_213_BWR = 0x12,
 } epd_model_id_t;
 
 struct epd_driver;

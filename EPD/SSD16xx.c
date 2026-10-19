@@ -1,5 +1,7 @@
 #include "EPD_driver.h"
 
+#define SSD16xx_213_TOP 8  // X offset for the 2.13" (128x250) Hema ESL panel
+
 bool SSD16xx_ReadBusy(epd_model_t* epd) { return EPD_ReadBusy(); }
 
 static void SSD16xx_WaitBusy(uint16_t timeout) { EPD_WaitBusy(true, timeout); }
@@ -17,6 +19,7 @@ int8_t SSD16xx_ReadTemp(epd_model_t* epd) {
 }
 
 static void SSD16xx_SetWindow(epd_model_t* epd, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    if (epd->id == SSD1619_213_BWR) x += SSD16xx_213_TOP;  // panel-specific X offset (byte aligned)
     EPD_Write(SSD16xx_ENTRY_MODE, 0x03);  // set ram entry mode: x increase, y increase
     switch (epd->ic) {
         case DRV_IC_SSD1677:
@@ -54,6 +57,7 @@ static void SSD16xx_Refresh(epd_model_t* epd) {
     SSD16xx_WaitBusy(UINT16_MAX);
     EPD_DEBUG("refresh end");
     SSD16xx_SetWindow(epd, 0, 0, epd->width, epd->height);  // DO NOT REMOVE!
+    if (epd->id == SSD1619_213_BWR) SSD16xx_Update(0x83);   // power off after refresh
 }
 
 void SSD16xx_Clear(epd_model_t* epd, bool refresh) {
@@ -121,6 +125,8 @@ static const epd_driver_t epd_drv_ssd16xx = {
 const epd_model_t epd_ssd1619_420_bwr = {SSD1619_420_BWR, COLOR_BWR, &epd_drv_ssd16xx, DRV_IC_SSD1619, 400, 300};
 // SSD1619 400x300 Black/White
 const epd_model_t epd_ssd1619_420_bw = {SSD1619_420_BW, COLOR_BW, &epd_drv_ssd16xx, DRV_IC_SSD1619, 400, 300};
+// SSD1619 128x250 Black/White/Red (Hema 2.13" ESL, X offset 8)
+const epd_model_t epd_ssd1619_213_bwr = {SSD1619_213_BWR, COLOR_BWR, &epd_drv_ssd16xx, DRV_IC_SSD1619, 128, 250};
 // SSD1677 880x528 Black/White/Red
 const epd_model_t epd_ssd1677_750_bwr = {SSD1677_750_HD_BWR, COLOR_BWR, &epd_drv_ssd16xx, DRV_IC_SSD1677, 880, 528};
 // SSD1677 880x528 Black/White

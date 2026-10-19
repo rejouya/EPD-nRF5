@@ -8,7 +8,7 @@
 #include "nrf_log.h"
 
 #define CONFIG_FILE_ID 0x0000
-#define CONFIG_REC_KEY 0x0001
+#define CONFIG_REC_KEY 0x0002
 
 static void fds_evt_handler(fds_evt_t const* const p_fds_evt) {
     NRF_LOG_DEBUG("fds evt: id=%d result=%d\n", p_fds_evt->id, p_fds_evt->result);
