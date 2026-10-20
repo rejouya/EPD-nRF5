@@ -136,11 +136,13 @@ class PaintManager {
       } else {
         this.setActiveTool('text', '插入文字');
         this.brushColor = document.getElementById('brush-color').value;
+        this.updateTextPreview();
       }
     });
 
     document.getElementById('brush-color').addEventListener('change', (e) => {
       this.brushColor = e.target.value;
+      this.updateTextPreview();
     });
 
     document.getElementById('brush-size').addEventListener('input', (e) => {
@@ -154,12 +156,20 @@ class PaintManager {
     document.getElementById('text-bold').addEventListener('click', () => {
       this.textBold = !this.textBold;
       document.getElementById('text-bold').classList.toggle('primary', this.textBold);
+      this.updateTextPreview();
     });
 
     document.getElementById('text-italic').addEventListener('click', () => {
       this.textItalic = !this.textItalic;
       document.getElementById('text-italic').classList.toggle('primary', this.textItalic);
+      this.updateTextPreview();
     });
+
+    // Live preview of the text style
+    document.getElementById('text-input').addEventListener('input', () => this.updateTextPreview());
+    document.getElementById('font-family').addEventListener('change', () => this.updateTextPreview());
+    document.getElementById('font-size').addEventListener('input', () => this.updateTextPreview());
+    this.updateTextPreview();
 
     // Add undo/redo button listeners
     document.getElementById('undo-btn').addEventListener('click', () => this.undo());
@@ -521,6 +531,38 @@ class PaintManager {
     return null;
   }
 
+  updateTextPreview() {
+    const cv = document.getElementById('text-preview');
+    if (!cv) return;
+
+    const W = 200, H = 40, dpr = 2;
+    if (cv.width !== W * dpr || cv.height !== H * dpr) {
+      cv.width = W * dpr;
+      cv.height = H * dpr;
+    }
+
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, W, H);
+
+    const family = document.getElementById('font-family').value;
+    const size = Math.max(1, parseInt(document.getElementById('font-size').value) || 16);
+    const input = document.getElementById('text-input');
+    const text = input.value || '预览文字';
+    const isPlaceholder = !input.value;
+
+    const style = (this.textItalic ? 'italic ' : '') + (this.textBold ? 'bold ' : '');
+    ctx.font = `${style}${size}px ${family}`;
+    const textWidth = Math.max(ctx.measureText(text).width, 1);
+    const scale = Math.min(1, (W - 16) / textWidth, (H - 16) / size);
+
+    ctx.font = `${style}${Math.max(1, size * scale)}px ${family}`;
+    ctx.fillStyle = isPlaceholder ? '#bbbbbb' : (this.brushColor || '#000000');
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 8, H / 2 + 1);
+  }
+
   startTextPlacement() {
     const text = document.getElementById('text-input').value.trim();
     if (!text) {
@@ -589,6 +631,7 @@ class PaintManager {
 
     // Reset
     document.getElementById('text-input').value = '';
+    this.updateTextPreview();
     this.isTextPlacementMode = false;
     this.canvas.classList.remove('text-placement-mode');
     setCanvasTitle('拖动新添加文字可调整位置');
