@@ -30,6 +30,7 @@ const canvasSizes = [
   { name: '2.13_104_212', width: 104, height: 212 },
   { name: '2.13_122_250', width: 122, height: 250 },
   { name: '2.13_128_250', width: 128, height: 250 },
+  { name: '2.13_250_128', width: 250, height: 128 },
   { name: '2.66_152_296', width: 152, height: 296 },
   { name: '2.66_184_360', width: 184, height: 360 },
   { name: '2.9_128_296', width: 128, height: 296 },
@@ -218,6 +219,29 @@ function convertUC8159(blackWhiteData, redWhiteData) {
   return payloadData;
 }
 
+// Rotate a logical landscape bitmap (e.g. 250x128) into the panel's native
+// portrait RAM layout (128x250). Matches the GFX_ROTATE_270 mapping used by
+// the firmware: physical_x = logical_y, physical_y = w - 1 - logical_x.
+function toPanelBitmap(data, w, h) {
+  const inStride = (w + 7) >> 3;
+  const pw = h;
+  const ph = w;
+  const outStride = (pw + 7) >> 3;
+  const out = new Uint8Array(outStride * ph);
+  for (let py = 0; py < ph; py++) {
+    const lx = w - 1 - py;
+    const srcByte = lx >> 3;
+    const srcBit = 0x80 >> (lx & 7);
+    const rowBase = py * outStride;
+    for (let px = 0; px < pw; px++) {
+      if (data[px * inStride + srcByte] & srcBit) {
+        out[rowBase + (px >> 3)] |= 0x80 >> (px & 7);
+      }
+    }
+  }
+  return out;
+}
+
 async function sendimg() {
   if (cropManager.isCropMode()) {
     alert("请先完成图片裁剪！发送已取消。");
@@ -230,6 +254,10 @@ async function sendimg() {
   const selectedOption = epdDriverSelect.options[epdDriverSelect.selectedIndex];
 
   if (selectedOption.getAttribute('data-size') !== canvasSize) {
+    if (epdDriverSelect.value === '12') {
+      alert("2.13寸三色屏必须使用 250x128 画布，请先选择对应画布尺寸。");
+      return;
+    }
     if (!confirm("警告：画布尺寸和驱动不匹配，是否继续？")) return;
   }
   if (selectedOption.getAttribute('data-color') !== ditherMode) {
@@ -249,8 +277,12 @@ async function sendimg() {
 
   if (ditherMode === 'threeColor') {
     const halfLength = Math.floor(processedData.length / 2);
-    const blackWhiteData = processedData.slice(0, halfLength);
-    const redWhiteData = processedData.slice(halfLength);
+    let blackWhiteData = processedData.slice(0, halfLength);
+    let redWhiteData = processedData.slice(halfLength);
+    if (epdDriverSelect.value === '12') {
+      blackWhiteData = toPanelBitmap(blackWhiteData, canvas.width, canvas.height);
+      redWhiteData = toPanelBitmap(redWhiteData, canvas.width, canvas.height);
+    }
     if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
       await writeImage(convertUC8159(blackWhiteData, redWhiteData), 'bw');
     } else {
@@ -262,7 +294,11 @@ async function sendimg() {
       const emptyData = new Uint8Array(processedData.length).fill(0xFF);
       await writeImage(convertUC8159(processedData, emptyData), 'bw');
     } else {
-      await writeImage(processedData, 'bw');
+      let bwData = processedData;
+      if (epdDriverSelect.value === '12') {
+        bwData = toPanelBitmap(bwData, canvas.width, canvas.height);
+      }
+      await writeImage(bwData, 'bw');
     }
   } else if (ditherMode === 'fourColor' || ditherMode === 'sixColor') {
     await writeImage(processedData, 'bw');
