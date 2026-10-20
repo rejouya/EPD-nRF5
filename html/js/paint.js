@@ -19,6 +19,14 @@ class PaintManager {
     this.textBold = false;
     this.textItalic = false;
 
+    // Fonts bundled with the page (loaded on demand)
+    this.webFonts = {
+      'EPD Serif SC': 'fonts/epd-serif-sc.woff2',
+      'EPD Hand': 'fonts/epd-hand.woff2'
+    };
+    this.loadedFonts = {};
+    this.loadingFonts = {};
+
     // Brush cursor indicator
     this.brushCursor = null;
 
@@ -531,6 +539,24 @@ class PaintManager {
     return null;
   }
 
+  loadWebFont(family) {
+    const url = this.webFonts[family];
+    if (!url || this.loadedFonts[family] || this.loadingFonts[family]) {
+      return Promise.resolve(false);
+    }
+    this.loadingFonts[family] = true;
+    const face = new FontFace(family, `url(${url})`, { display: 'swap' });
+    return face.load().then((loaded) => {
+      document.fonts.add(loaded);
+      this.loadedFonts[family] = true;
+      this.loadingFonts[family] = false;
+      return true;
+    }).catch(() => {
+      this.loadingFonts[family] = false;
+      return false;
+    });
+  }
+
   updateTextPreview() {
     const cv = document.getElementById('text-preview');
     if (!cv) return;
@@ -548,6 +574,9 @@ class PaintManager {
 
     const family = document.getElementById('font-family').value;
     const size = Math.max(1, parseInt(document.getElementById('font-size').value) || 16);
+    this.loadWebFont(family).then((loaded) => {
+      if (loaded) this.updateTextPreview();
+    });
     const input = document.getElementById('text-input');
     const text = input.value || '预览文字';
     const isPlaceholder = !input.value;
@@ -563,12 +592,14 @@ class PaintManager {
     ctx.fillText(text, 8, H / 2 + 1);
   }
 
-  startTextPlacement() {
+  async startTextPlacement() {
     const text = document.getElementById('text-input').value.trim();
     if (!text) {
       alert('请输入文字内容');
       return;
     }
+
+    await this.loadWebFont(document.getElementById('font-family').value);
 
     this.isTextPlacementMode = true;
 
