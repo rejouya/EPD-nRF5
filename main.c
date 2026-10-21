@@ -82,6 +82,7 @@
 #define SCHED_QUEUE_SIZE                10                                              /**< Maximum number of events in the scheduler queue. */
 
 #define CLOCK_TIMER_INTERVAL             TIMER_TICKS(1000)                              /**< Clock timer interval (ticks). */
+#define SESSION_IDLE_TIMEOUT             TIMER_TICKS(15000)                             /**< Idle time after disconnect before sleeping or re-advertising (ticks). */
 
 #define DEAD_BEEF                        0xDEADBEEF                                     /**< Value used as error code on stack dump, can be used to identify stack location on stack unwind. */
 
@@ -98,6 +99,9 @@ static ble_uuid_t                        m_adv_uuids[] = {{BLE_UUID_EPD_SVC, \
 BLE_EPD_DEF(m_epd);                                                                     /**< Structure to identify the EPD Service. */
 static uint32_t                          m_timestamp = 1735689600;                      /**< Current timestamp. */
 APP_TIMER_DEF(m_clock_timer_id);                                                        /**< Clock timer. */
+APP_TIMER_DEF(m_session_timer_id);                                                      /**< Session idle timer. */
+APP_TIMER_DEF(m_button_timer_id);                                                       /**< Button debounce/press timer. */
+APP_TIMER_DEF(m_led_timer_id);                                                          /**< LED blink timer. */
 static nrf_drv_wdt_channel_id            m_wdt_channel_id;
 static uint32_t                          m_wdt_last_feed_time = 0;
 static uint32_t                          m_resetreas;
@@ -227,6 +231,50 @@ static void clock_timer_timeout_handler(void* p_context) {
     ble_epd_on_timer(&m_epd, m_timestamp, false);
 }
 
+static void advertising_start(void);
+static void button_timer_handler(void* p_context);
+
+#define LED_BLINK_TICKS TIMER_TICKS(250)
+static bool m_led_blinking = false;
+
+static void led_timer_handler(void* p_context) {
+    UNUSED_PARAMETER(p_context);
+    if (m_led_blinking) EPD_LED_Toggle();
+}
+
+static void led_blink_start(void) {
+    EPD_LED_Init();
+    EPD_LED_ON();
+    m_led_blinking = true;
+    app_timer_stop(m_led_timer_id);
+    app_timer_start(m_led_timer_id, LED_BLINK_TICKS, NULL);
+}
+
+static void led_blink_stop(bool on) {
+    m_led_blinking = false;
+    app_timer_stop(m_led_timer_id);
+    if (on) {
+        EPD_LED_Init();
+        EPD_LED_ON();
+    } else {
+        EPD_LED_OFF();
+    }
+}
+
+static void session_timer_timeout_handler(void* p_context) {
+    UNUSED_PARAMETER(p_context);
+
+    if (m_conn_handle != BLE_CONN_HANDLE_INVALID) return;
+
+    if (m_epd.config.wakeup_pin != 0xFF && m_epd.config.display_mode == MODE_PICTURE) {
+        NRF_LOG_INFO("session idle, entering sleep\n");
+        sleep_mode_enter();
+    } else {
+        NRF_LOG_INFO("session idle, restarting advertising\n");
+        advertising_start();
+    }
+}
+
 /**@brief Function for the Event Scheduler initialization.
  */
 static void scheduler_init(void) { APP_SCHED_INIT(SCHED_MAX_EVENT_DATA_SIZE, SCHED_QUEUE_SIZE); }
@@ -244,6 +292,9 @@ static void timers_init(void) {
 #endif
     // Create timers.
     APP_ERROR_CHECK(app_timer_create(&m_clock_timer_id, APP_TIMER_MODE_REPEATED, clock_timer_timeout_handler));
+    APP_ERROR_CHECK(app_timer_create(&m_session_timer_id, APP_TIMER_MODE_SINGLE_SHOT, session_timer_timeout_handler));
+    APP_ERROR_CHECK(app_timer_create(&m_button_timer_id, APP_TIMER_MODE_SINGLE_SHOT, button_timer_handler));
+    APP_ERROR_CHECK(app_timer_create(&m_led_timer_id, APP_TIMER_MODE_REPEATED, led_timer_handler));
 }
 
 /**@brief Function for starting application timers.
@@ -259,6 +310,7 @@ static void application_timers_start(void) {
  */
 void sleep_mode_enter(void) {
     NRF_LOG_DEBUG("Entering deep sleep mode\n");
+    led_blink_stop(false);
     NRF_LOG_FINAL_FLUSH();
     nrf_delay_ms(100);
 
@@ -373,26 +425,126 @@ static void advertising_start(void) {
 #endif
 }
 
+#define BUTTON_DEBOUNCE_TICKS            TIMER_TICKS(20)                                /**< Button debounce time (ticks). */
+#define BUTTON_TOGGLE_TICKS              TIMER_TICKS(180)                               /**< Press time for mode toggle (ticks). */
+#define BUTTON_TOGGLE_WINDOW_TICKS       TIMER_TICKS(800)                               /**< Toggle window after the minimum press time (ticks). */
+#define BUTTON_SLEEP_TICKS               TIMER_TICKS(1000)                              /**< Additional press time for sleep (ticks). */
+
+typedef enum { BTN_IDLE, BTN_DEBOUNCE, BTN_PRESSED, BTN_MID, BTN_WAIT, BTN_SLEEP_WAIT } btn_state_t;
+static btn_state_t m_btn_state = BTN_IDLE;
+static bool        m_button_ready = false;
+
+static void display_mode_toggle(void) {
+    if (m_epd.config.display_mode == MODE_PICTURE)
+        ble_epd_set_display_mode(&m_epd, MODE_CALENDAR);
+    else
+        ble_epd_show_image_async(&m_epd);
+}
+
+static void button_timer_handler(void* p_context) {
+    UNUSED_PARAMETER(p_context);
+
+    bool down = (nrf_gpio_pin_read(m_epd.config.wakeup_pin) == 0);
+
+    switch (m_btn_state) {
+        case BTN_DEBOUNCE:
+            if (down) {
+                m_btn_state = BTN_PRESSED;
+                app_timer_start(m_button_timer_id, BUTTON_TOGGLE_TICKS, NULL);
+            } else {
+                m_btn_state = BTN_IDLE;
+            }
+            break;
+        case BTN_PRESSED:
+            if (down) {
+                m_btn_state = BTN_MID;
+                app_timer_start(m_button_timer_id, BUTTON_TOGGLE_WINDOW_TICKS, NULL);
+            } else {
+                m_btn_state = BTN_IDLE;
+            }
+            break;
+        case BTN_MID:
+            if (down) {
+                m_btn_state = BTN_WAIT;
+                app_timer_start(m_button_timer_id, BUTTON_SLEEP_TICKS, NULL);
+            } else {
+                m_btn_state = BTN_IDLE;
+            }
+            break;
+        case BTN_WAIT:
+            if (down) {
+                NRF_LOG_INFO("button long press, waiting for release\n");
+                m_btn_state = BTN_SLEEP_WAIT;
+                led_blink_stop(false);
+                app_timer_start(m_button_timer_id, TIMER_TICKS(100), NULL);
+            } else {
+                m_btn_state = BTN_IDLE;
+            }
+            break;
+        case BTN_SLEEP_WAIT:
+            if (down) {
+                app_timer_start(m_button_timer_id, TIMER_TICKS(100), NULL);
+            } else {
+                m_btn_state = BTN_IDLE;
+                sleep_mode_enter();
+            }
+            break;
+        default:
+            break;
+    }
+}
+
 void gpiote_evt_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action) {
-    NRF_LOG_DEBUG("pin: %d, event: %d\n", pin, action);
+    UNUSED_PARAMETER(action);
 
-    nrf_drv_gpiote_in_event_disable(pin);
-    nrf_drv_gpiote_in_uninit(pin);
-    nrf_drv_gpiote_uninit();
+    bool down = (nrf_gpio_pin_read(pin) == 0);
 
-    // blink LED on wakeup
-    EPD_LED_BLINK();
-
-    advertising_start();
+    if (down) {
+        if (m_btn_state == BTN_IDLE) {
+            m_btn_state = BTN_DEBOUNCE;
+            app_timer_stop(m_button_timer_id);
+            app_timer_start(m_button_timer_id, BUTTON_DEBOUNCE_TICKS, NULL);
+        }
+    } else {
+        if (m_btn_state == BTN_SLEEP_WAIT) {
+            m_btn_state = BTN_IDLE;
+            app_timer_stop(m_button_timer_id);
+            sleep_mode_enter();
+        } else if (m_btn_state == BTN_DEBOUNCE || m_btn_state == BTN_PRESSED) {
+            m_btn_state = BTN_IDLE;
+            app_timer_stop(m_button_timer_id);
+        } else if (m_btn_state == BTN_MID) {
+            m_btn_state = BTN_IDLE;
+            app_timer_stop(m_button_timer_id);
+            NRF_LOG_INFO("button press, toggling display mode\n");
+            display_mode_toggle();
+        } else if (m_btn_state == BTN_WAIT) {
+            m_btn_state = BTN_IDLE;
+            app_timer_stop(m_button_timer_id);
+        }
+    }
 }
 
 static void setup_wakeup_pin(nrf_drv_gpiote_pin_t pin) {
+    if (m_button_ready) return;
+
     NRF_LOG_DEBUG("Setting up wakeup pin\n");
 
-    APP_ERROR_CHECK(nrf_drv_gpiote_init());
-    nrf_drv_gpiote_in_config_t config = GPIOTE_CONFIG_IN_SENSE_LOTOHI(false);
+    if (!nrf_drv_gpiote_is_init()) APP_ERROR_CHECK(nrf_drv_gpiote_init());
+    nrf_drv_gpiote_in_config_t config = GPIOTE_CONFIG_IN_SENSE_TOGGLE(false);
+#if EPD_WAKEUP_ACTIVE_HIGH
+    config.pull = NRF_GPIO_PIN_PULLDOWN;
+#else
+    config.pull = NRF_GPIO_PIN_PULLUP;
+#endif
     APP_ERROR_CHECK(nrf_drv_gpiote_in_init(pin, &config, gpiote_evt_handler));
     nrf_drv_gpiote_in_event_enable(pin, true);
+    m_button_ready = true;
+
+    if (nrf_gpio_pin_read(pin) == 0) {
+        m_btn_state = BTN_PRESSED;
+        app_timer_start(m_button_timer_id, BUTTON_TOGGLE_TICKS, NULL);
+    }
 }
 
 /**@brief Function for handling advertising events.
@@ -404,9 +556,12 @@ static void setup_wakeup_pin(nrf_drv_gpiote_pin_t pin) {
 static void on_adv_evt(ble_adv_evt_t ble_adv_evt) {
     switch (ble_adv_evt) {
         case BLE_ADV_EVT_FAST:
+            led_blink_start();
             break;
         case BLE_ADV_EVT_IDLE:
             NRF_LOG_INFO("advertising timeout\n");
+            led_blink_stop(false);
+            if (m_conn_handle != BLE_CONN_HANDLE_INVALID) break;
             if (m_epd.config.wakeup_pin != 0xFF) {
                 if (m_epd.config.display_mode == MODE_PICTURE)
                     sleep_mode_enter();
@@ -430,12 +585,17 @@ static void on_ble_evt(ble_evt_t* p_ble_evt) {
         case BLE_GAP_EVT_CONNECTED:
             NRF_LOG_INFO("CONNECTED\n");
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
+            app_timer_stop(m_session_timer_id);
+            led_blink_stop(true);
             break;
 
         case BLE_GAP_EVT_DISCONNECTED:
             NRF_LOG_INFO("DISCONNECTED\n");
             m_conn_handle = BLE_CONN_HANDLE_INVALID;
-#if !defined(S112)
+            led_blink_start();
+#if defined(S112)
+            APP_ERROR_CHECK(app_timer_start(m_session_timer_id, SESSION_IDLE_TIMEOUT, NULL));
+#else
             advertising_start();
 #endif
             break;
@@ -726,6 +886,8 @@ int main(void) {
     application_timers_start();
 
     advertising_start();
+
+    if (m_epd.config.wakeup_pin != 0xFF) setup_wakeup_pin(m_epd.config.wakeup_pin);
 
     NRF_LOG_DEBUG("done.\n");
 

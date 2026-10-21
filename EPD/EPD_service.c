@@ -21,10 +21,12 @@
 #include "nrf_gpio.h"
 #include "nrf_log.h"
 #include "nrf_pwr_mgmt.h"
+#include "nrf_sdh_soc.h"
+#include "nrf_soc.h"
 #include "sdk_macros.h"
 
 #if defined(S112)
-#define EPD_CFG_52811 {0x14, 0x13, 0x06, 0x05, 0x04, 0x03, 0x02, 0x12, 0xFF, 0x12, 0x07}
+#define EPD_CFG_52811 {0x14, 0x13, 0x06, 0x05, 0x04, 0x03, 0x02, 0x12, 0x1B, 0x12, 0x07}
 #define EPD_CFG_52810 {0x14, 0x13, 0x12, 0x11, 0x10, 0x0F, 0x0E, 0x12, 0xFF, 0x0D, 0x02}
 #else
 #define EPD_CFG_DEFAULT {0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x03, 0x09, 0x03}
@@ -55,9 +57,149 @@ static uint32_t rle_decompress_from(const uint8_t* src, uint32_t src_len, uint32
     return dst_pos;
 }
 
+#define IMG_FLASH_ADDR 0x27000UL
+#define IMG_PAGE_SIZE  4096
+#define IMG_PLANE_SIZE 4000
+#define IMG_MAGIC_ADDR (IMG_FLASH_ADDR + IMG_PAGE_SIZE - 16)
+#define IMG_MAGIC      0x31494D47UL
+
+static uint32_t          m_img_buf[2][IMG_PAGE_SIZE / 4];
+static uint16_t          m_img_len[2];
+static uint8_t           m_img_plane;
+static bool              m_img_capturing;
+static volatile uint8_t  m_img_flush_pending;
+static volatile uint8_t  m_img_flush_state;
+static volatile bool     m_img_commit;
+static uint8_t           m_img_flush_plane;
+static uint32_t          m_img_magic = IMG_MAGIC;
+
+static void epd_update_display_mode(ble_epd_t* p_epd, display_mode_t mode);
+
+static void img_flush_kick(void) {
+    if (m_img_flush_state != 0 || m_img_flush_pending == 0) return;
+
+    uint8_t plane = 0;
+    while (!(m_img_flush_pending & (1 << plane))) plane++;
+
+    m_img_flush_plane = plane;
+    m_img_flush_state = 1;
+    if (sd_flash_page_erase((IMG_FLASH_ADDR + plane * IMG_PAGE_SIZE) / IMG_PAGE_SIZE) != NRF_SUCCESS) {
+        m_img_flush_state = 0;
+    }
+}
+
+static void img_soc_evt_handler(uint32_t evt_id, void* p_context) {
+    (void)p_context;
+
+    if (evt_id != NRF_EVT_FLASH_OPERATION_SUCCESS && evt_id != NRF_EVT_FLASH_OPERATION_ERROR) return;
+
+    if (m_img_flush_state == 1) {
+        uint32_t ret = sd_flash_write((uint32_t*)(IMG_FLASH_ADDR + m_img_flush_plane * IMG_PAGE_SIZE),
+                                      m_img_buf[m_img_flush_plane], IMG_PLANE_SIZE / 4);
+        if (ret == NRF_SUCCESS) {
+            m_img_flush_state = 2;
+        } else {
+            m_img_flush_pending &= ~(1 << m_img_flush_plane);
+            m_img_flush_state = 0;
+        }
+    } else if (m_img_flush_state == 2) {
+        m_img_flush_pending &= ~(1 << m_img_flush_plane);
+        m_img_flush_state = 0;
+    }
+
+    if (m_img_flush_state != 0) return;
+
+    if (m_img_commit && m_img_flush_pending == 0) {
+        m_img_commit = false;
+        m_img_magic = IMG_MAGIC;
+        if (sd_flash_write((uint32_t*)IMG_MAGIC_ADDR, &m_img_magic, 1) != NRF_SUCCESS) m_img_magic = 0;
+    } else if (m_img_flush_pending) {
+        img_flush_kick();
+    }
+}
+
+NRF_SDH_SOC_OBSERVER(m_img_soc_obs, 0, img_soc_evt_handler, NULL);
+
+static void img_capture_begin(bool black) {
+    uint8_t plane = black ? 0 : 1;
+
+    if (plane == 0) {
+        m_img_capturing = false;
+        m_img_commit = false;
+    } else if (m_img_capturing && m_img_plane == 0 && m_img_len[0] > 0) {
+        m_img_flush_pending |= (1 << m_img_plane);
+        img_flush_kick();
+    }
+
+    if (m_img_flush_pending & (1 << plane)) {
+        m_img_capturing = false;
+        return;
+    }
+
+    m_img_plane = plane;
+    m_img_len[plane] = 0;
+    m_img_capturing = true;
+}
+
+static void img_capture_append(bool black, const uint8_t* data, uint16_t len) {
+    uint8_t plane = black ? 0 : 1;
+
+    if (!m_img_capturing || plane != m_img_plane) return;
+    if ((uint32_t)m_img_len[plane] + len > IMG_PLANE_SIZE) return;
+
+    memcpy(((uint8_t*)m_img_buf[plane]) + m_img_len[plane], data, len);
+    m_img_len[plane] += len;
+}
+
+static void img_capture_commit(void) {
+    if (!m_img_capturing || m_img_len[m_img_plane] == 0) return;
+
+    m_img_flush_pending |= (1 << m_img_plane);
+    m_img_capturing = false;
+    m_img_commit = true;
+    img_flush_kick();
+}
+
+static bool img_valid(void) { return *(volatile uint32_t*)IMG_MAGIC_ADDR == IMG_MAGIC; }
+
+void ble_epd_show_image(ble_epd_t* p_epd) {
+    if (!img_valid()) return;
+
+    epd_update_display_mode(p_epd, MODE_PICTURE);
+
+    bool connected = (p_epd->conn_handle != BLE_CONN_HANDLE_INVALID);
+    if (!connected) EPD_GPIO_Init();
+    epd_model_t* epd = epd_init((epd_model_id_t)p_epd->config.model_id);
+
+    for (uint16_t i = 0; i < IMG_PLANE_SIZE; i += 250)
+        epd->drv->write_ram(epd, i == 0, true, (uint8_t*)(IMG_FLASH_ADDR + i), 250);
+    for (uint16_t i = 0; i < IMG_PLANE_SIZE; i += 250)
+        epd->drv->write_ram(epd, i == 0, false, (uint8_t*)(IMG_FLASH_ADDR + IMG_PAGE_SIZE + i), 250);
+    epd->drv->refresh(epd);
+    epd->drv->sleep(epd);
+    nrf_delay_ms(200);
+    if (!connected) EPD_GPIO_Uninit();
+}
+
+typedef struct {
+    ble_epd_t* p_epd;
+} epd_image_event_t;
+
+static void epd_show_image_task(void* p_event_data, uint16_t event_size) {
+    (void)event_size;
+    ble_epd_show_image(((epd_image_event_t*)p_event_data)->p_epd);
+}
+
+void ble_epd_show_image_async(ble_epd_t* p_epd) {
+    epd_image_event_t event = {p_epd};
+    app_sched_event_put(&event, sizeof(event), epd_show_image_task);
+}
+
 static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     epd_gui_update_event_t* event = (epd_gui_update_event_t*)p_event_data;
     ble_epd_t* p_epd = event->p_epd;
+
+    if (p_epd->config.display_mode == MODE_PICTURE) return;
 
     EPD_GPIO_Init();
     epd_model_t* epd = epd_init((epd_model_id_t)p_epd->config.model_id);
@@ -182,6 +324,7 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
 
         case EPD_CMD_REFRESH:
             epd_update_display_mode(p_epd, MODE_PICTURE);
+            img_capture_commit();
             if (p_epd->epd) p_epd->epd->drv->refresh(p_epd->epd);
             break;
 
@@ -222,16 +365,20 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
             uint8_t rle_out[UINT8_MAX];
             uint32_t src_pos = 0;
 
+            if (begin) img_capture_begin(black);
+
             if (rle) {
                 while (src_pos < data_len) {
                     app_feed_wdt();
                     uint32_t out_len = rle_decompress_from(&p_data[2], data_len, &src_pos, rle_out, sizeof(rle_out));
                     if (out_len == 0) break;
                     if (p_epd->epd) p_epd->epd->drv->write_ram(p_epd->epd, begin, black, rle_out, (uint16_t)out_len);
+                    img_capture_append(black, rle_out, (uint16_t)out_len);
                     begin = false;
                 }
             } else {
                 if (p_epd->epd) p_epd->epd->drv->write_ram(p_epd->epd, begin, black, &p_data[2], data_len);
+                img_capture_append(black, &p_data[2], data_len);
             }
         } break;
 
@@ -367,7 +514,11 @@ void ble_epd_sleep_prepare(ble_epd_t* p_epd) {
     EPD_LED_OFF();
     // Prepare wakeup pin
     if (p_epd->config.wakeup_pin != 0xFF) {
-        nrf_gpio_cfg_sense_input(p_epd->config.wakeup_pin, NRF_GPIO_PIN_NOPULL, NRF_GPIO_PIN_SENSE_HIGH);
+#if EPD_WAKEUP_ACTIVE_HIGH
+        nrf_gpio_cfg_sense_input(p_epd->config.wakeup_pin, NRF_GPIO_PIN_PULLDOWN, NRF_GPIO_PIN_SENSE_HIGH);
+#else
+        nrf_gpio_cfg_sense_input(p_epd->config.wakeup_pin, NRF_GPIO_PIN_PULLUP, NRF_GPIO_PIN_SENSE_LOW);
+#endif
     }
 }
 
@@ -396,7 +547,7 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
         uint8_t cfg[] = EPD_CFG_DEFAULT;
         memcpy(&p_epd->config, cfg, sizeof(cfg));
 #endif
-        if (p_epd->config.display_mode == 0xFF) p_epd->config.display_mode = MODE_CALENDAR;
+        if (p_epd->config.display_mode == 0xFF) p_epd->config.display_mode = MODE_PICTURE;
         if (p_epd->config.week_start == 0xFF) p_epd->config.week_start = 0;
         epd_config_write(&p_epd->config);
     }
@@ -426,6 +577,11 @@ uint32_t ble_epd_string_send(ble_epd_t* p_epd, uint8_t* p_string, uint16_t lengt
     hvx_params.type = BLE_GATT_HVX_NOTIFICATION;
 
     return sd_ble_gatts_hvx(p_epd->conn_handle, &hvx_params);
+}
+
+void ble_epd_set_display_mode(ble_epd_t* p_epd, display_mode_t mode) {
+    epd_update_display_mode(p_epd, mode);
+    ble_epd_on_timer(p_epd, timestamp(), true);
 }
 
 void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {

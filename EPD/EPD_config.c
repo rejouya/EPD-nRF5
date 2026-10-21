@@ -2,113 +2,82 @@
 
 #include <string.h>
 
-#include "app_scheduler.h"
-#include "fds.h"
 #include "nordic_common.h"
+#include "nrf.h"
 #include "nrf_log.h"
+#include "nrf_sdh_soc.h"
+#include "nrf_soc.h"
 
-#define CONFIG_FILE_ID 0x0000
-#define CONFIG_REC_KEY 0x0002
+#define CONFIG_PAGE_ADDR 0x26000UL
+#define CONFIG_PAGE_SIZE 4096
+#define CONFIG_MAGIC     0x45504443UL
 
-static void fds_evt_handler(fds_evt_t const* const p_fds_evt) {
-    NRF_LOG_DEBUG("fds evt: id=%d result=%d\n", p_fds_evt->id, p_fds_evt->result);
+typedef struct {
+    uint32_t magic;
+    uint8_t  data[16];
+    uint32_t check;
+} config_record_t;
+
+static config_record_t  m_pending;
+static volatile uint8_t m_write_state = 0;
+
+static uint32_t record_checksum(const uint8_t* data) {
+    uint32_t sum = 0;
+    for (uint8_t i = 0; i < sizeof(m_pending.data); i++) sum += data[i];
+    return sum;
 }
 
-static void run_fds_gc(void* p_event_data, uint16_t event_size) {
-    NRF_LOG_DEBUG("run garbage collection (fds_gc)\n");
-    fds_gc();
+static bool record_valid(const config_record_t* record) {
+    return record->magic == CONFIG_MAGIC && record->check == record_checksum(record->data);
 }
 
-void epd_config_init(epd_config_t* cfg) {
-    ret_code_t ret;
+static void config_soc_evt_handler(uint32_t evt_id, void* p_context) {
+    UNUSED_PARAMETER(p_context);
 
-    ret = fds_register(fds_evt_handler);
-    if (ret != NRF_SUCCESS) {
-        NRF_LOG_ERROR("fds_register failed, code=%d\n", ret);
-        return;
+    if (evt_id != NRF_EVT_FLASH_OPERATION_SUCCESS && evt_id != NRF_EVT_FLASH_OPERATION_ERROR) return;
+
+    if (m_write_state == 1) {
+        uint32_t ret = sd_flash_write((uint32_t*)CONFIG_PAGE_ADDR, (uint32_t*)&m_pending,
+                                      sizeof(m_pending) / sizeof(uint32_t));
+        m_write_state = (ret == NRF_SUCCESS) ? 2 : 0;
+    } else if (m_write_state == 2) {
+        m_write_state = 0;
     }
-
-    ret = fds_init();
-    if (ret != NRF_SUCCESS) {
-        NRF_LOG_ERROR("fds_init failed, code=%d\n", ret);
-        return;
-    }
-
-    run_fds_gc(NULL, 0);
 }
+
+NRF_SDH_SOC_OBSERVER(m_config_soc_obs, 0, config_soc_evt_handler, NULL);
+
+void epd_config_init(epd_config_t* cfg) { memset(cfg, 0xFF, sizeof(epd_config_t)); }
 
 void epd_config_read(epd_config_t* cfg) {
-    fds_flash_record_t flash_record;
-    fds_record_desc_t record_desc;
-    fds_find_token_t ftok;
+    const config_record_t* record = (const config_record_t*)CONFIG_PAGE_ADDR;
 
     memset(cfg, 0xFF, sizeof(epd_config_t));
-    memset(&ftok, 0x00, sizeof(fds_find_token_t));
-
-    if (fds_record_find(CONFIG_FILE_ID, CONFIG_REC_KEY, &record_desc, &ftok) != NRF_SUCCESS) {
-        NRF_LOG_DEBUG("epd_config_load: record not found\n");
-        return;
-    }
-    if (fds_record_open(&record_desc, &flash_record) != NRF_SUCCESS) {
-        NRF_LOG_ERROR("epd_config_load: record open failed!");
-        return;
-    }
-#ifdef S112
-    uint32_t record_len = flash_record.p_header->length_words * sizeof(uint32_t);
-#else
-    uint32_t record_len = flash_record.p_header->tl.length_words * sizeof(uint32_t);
-#endif
-    memcpy(cfg, flash_record.p_data, MIN(sizeof(epd_config_t), record_len));
-    fds_record_close(&record_desc);
+    if (record_valid(record)) memcpy(cfg, record->data, EPD_CONFIG_SIZE);
 }
 
 void epd_config_write(epd_config_t* cfg) {
-    ret_code_t ret;
-    fds_record_t record;
-    fds_record_desc_t record_desc;
-    fds_find_token_t ftok;
+    if (m_write_state != 0) return;
 
-    record.file_id = CONFIG_FILE_ID;
-    record.key = CONFIG_REC_KEY;
-#ifdef S112
-    record.data.p_data = (void*)cfg;
-    record.data.length_words = BYTES_TO_WORDS(sizeof(epd_config_t));
-#else
-    fds_record_chunk_t record_chunk;
-    record_chunk.p_data = cfg;
-    record_chunk.length_words = BYTES_TO_WORDS(sizeof(epd_config_t));
-    record.data.p_chunks = &record_chunk;
-    record.data.num_chunks = 1;
-#endif
+    memset(&m_pending, 0xFF, sizeof(m_pending));
+    m_pending.magic = CONFIG_MAGIC;
+    memcpy(m_pending.data, cfg, EPD_CONFIG_SIZE);
+    m_pending.check = record_checksum(m_pending.data);
 
-    memset(&ftok, 0x00, sizeof(fds_find_token_t));
-    ret = fds_record_find(CONFIG_FILE_ID, CONFIG_REC_KEY, &record_desc, &ftok);
-    if (ret == NRF_SUCCESS)
-        ret = fds_record_update(&record_desc, &record);
-    else
-        ret = fds_record_write(&record_desc, &record);
-
-    if (ret != NRF_SUCCESS) {
-        NRF_LOG_ERROR("epd_config_save: record write/update failed, code=%d\n", ret);
-        if (ret == FDS_ERR_NO_SPACE_IN_FLASH) app_sched_event_put(NULL, 0, run_fds_gc);
-    }
+    m_write_state = 1;
+    uint32_t ret = sd_flash_page_erase(CONFIG_PAGE_ADDR / CONFIG_PAGE_SIZE);
+    if (ret != NRF_SUCCESS) m_write_state = 0;
 }
 
 void epd_config_clear(epd_config_t* cfg) {
-    ret_code_t ret;
-    fds_record_desc_t record_desc;
-    fds_find_token_t ftok;
+    static const uint32_t invalid = 0;
 
-    memset(&ftok, 0x00, sizeof(fds_find_token_t));
-    if (fds_record_find(CONFIG_FILE_ID, CONFIG_REC_KEY, &record_desc, &ftok) != NRF_SUCCESS) {
-        NRF_LOG_DEBUG("epd_config_clear: record not found\n");
-        return;
-    }
+    memset(cfg, 0xFF, sizeof(epd_config_t));
+    if (m_write_state != 0) return;
 
-    ret = fds_record_delete(&record_desc);
-    if (ret != NRF_SUCCESS) {
-        NRF_LOG_ERROR("fds_record_delete failed, code=%d\n", ret);
-    }
+    m_write_state = 2;
+    uint32_t ret = sd_flash_write((uint32_t*)CONFIG_PAGE_ADDR, (uint32_t*)&invalid, 1);
+    if (ret != NRF_SUCCESS) m_write_state = 0;
 }
 
 bool epd_config_empty(epd_config_t* cfg) {

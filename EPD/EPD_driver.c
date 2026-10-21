@@ -125,7 +125,6 @@ void EPD_GPIO_Uninit(void) {
     pinMode(EPD_BUSY_PIN, DEFAULT);
     pinMode(EPD_BS_PIN, DEFAULT);
     pinMode(EPD_EN_PIN, DEFAULT);
-    pinMode(EPD_LED_PIN, DEFAULT);
 }
 
 // SPI
@@ -200,13 +199,10 @@ void EPD_Reset(bool status, uint16_t duration) {
 bool EPD_ReadBusy(void) { return digitalRead(EPD_BUSY_PIN); }
 
 void EPD_WaitBusy(bool status, uint16_t timeout) {
-    uint32_t led_status = digitalRead(EPD_LED_PIN);
-
     EPD_DEBUG("check busy");
     while (EPD_ReadBusy() == status) {
         if (timeout % 100 == 0) {
             app_feed_wdt();
-            EPD_LED_Toggle();
         }
         delay(1);
         timeout--;
@@ -216,15 +212,16 @@ void EPD_WaitBusy(bool status, uint16_t timeout) {
         }
     }
     EPD_DEBUG("busy release");
-
-    // restore led status
-    if (led_status == LOW)
-        EPD_LED_ON();
-    else
-        EPD_LED_OFF();
 }
 
 // lED
+void EPD_LED_Init(void) {
+    if (EPD_LED_PIN != 0xFF) {
+        pinMode(EPD_LED_PIN, OUTPUT);
+        digitalWrite(EPD_LED_PIN, HIGH);
+    }
+}
+
 void EPD_LED_ON(void) {
     if (EPD_LED_PIN != 0xFF) digitalWrite(EPD_LED_PIN, LOW);
 }

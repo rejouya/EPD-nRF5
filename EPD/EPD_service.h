@@ -42,7 +42,9 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
 #define BLE_EPD_DEF(_name) static ble_epd_t _name;
 #endif
 
-#define APP_VERSION 0x1a
+#define APP_VERSION 0x1B
+
+#define EPD_WAKEUP_ACTIVE_HIGH 0
 
 #define BLE_UUID_EPD_SVC_BASE \
     {{0XEC, 0X5A, 0X67, 0X1C, 0XC1, 0XB6, 0X46, 0XFB, 0X8D, 0X91, 0X28, 0XD8, 0X22, 0X36, 0X75, 0X62}}
@@ -111,6 +113,20 @@ typedef struct {
  * @param[in] p_epd       EPD Service structure.
  */
 void ble_epd_sleep_prepare(ble_epd_t* p_epd);
+
+/**@brief Function for switching the display mode and redrawing.
+ *
+ * @param[in] p_epd       EPD Service structure.
+ * @param[in] mode        Display mode.
+ */
+void ble_epd_set_display_mode(ble_epd_t* p_epd, display_mode_t mode);
+
+/**@brief Function for redrawing the stored image from flash.
+ *
+ * @param[in] p_epd       EPD Service structure.
+ */
+void ble_epd_show_image(ble_epd_t* p_epd);
+void ble_epd_show_image_async(ble_epd_t* p_epd);
 
 /**@brief Function for initializing the EPD Service.
  *

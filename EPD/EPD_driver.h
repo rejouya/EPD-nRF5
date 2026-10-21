@@ -222,6 +222,7 @@ void EPD_WaitBusy(bool status, uint16_t timeout);
 // LED
 void EPD_LED_ON(void);
 void EPD_LED_OFF(void);
+void EPD_LED_Init(void);
 void EPD_LED_Toggle(void);
 void EPD_LED_BLINK(void);
 
